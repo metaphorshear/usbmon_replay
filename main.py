@@ -8,7 +8,8 @@ from libusb1 import USBError
 def main():
 	usage="""%prog [-dbt][-f +-CIZB] <-i vendor:product || -n name> dumpfile"""
 	"""
-	Currently usbmon captures in text and raw form are supported. Will add support for others in the future."""
+	Currently usbmon captures in text and raw form are supported. Note that you
+	will need to filter them to only include the device that you are testing."""
 	parser= OptionParser(usage, add_help_option=True)
 	parser.add_option("-i", "--vendor-product-id", dest="vendor_product_id",
 	help="specify the vendor and product ID in the form ####:####")
@@ -18,6 +19,7 @@ def main():
 	parser.add_option("-t", "--text", action="store_false", dest="binary", help="usbmon text dump (default)", default=False)
 	parser.add_option("-d", "--dry-run", action="store_true", dest="dry_run", help="don't actually run anything; print stuff", default=False)
 	parser.add_option("-f", "--filter", dest="filter", help="filter to assist in replaying the right packets")
+	parser.add_option("-o", dest="filename", help="file to write device responses", default="response.log")
 	(options, args) = parser.parse_args()
 	if len(args) < 1:
 		parser.error("You need to provide at least one dumpfile")
@@ -162,13 +164,16 @@ def replay(vendor, product, dumpfile, options):
 					elif trans_type == "Bo":
 						q.append((usbdev.bulkWrite,(endp,data,2000)))
 					elif trans_type == "Bi":
-						q.append((usbdev.bulkRead, (endp,len(data),2000)))
+						if length == 0:
+							length = 1024
+						q.append((usbdev.bulkRead, (endp,length,2000))) 
 				header=inp.read(48)
 	try:
 		rdev,rbus=max(devices, key=lambda x: devices[x])
 	except ValueError:
 		print "No devices in the capture matched your criteria."
 		exit(0)
+	outp=open(options.filename, "wb")
 	while q:
 		dev,bus=q.pop(0)
 		try:
@@ -192,8 +197,10 @@ def replay(vendor, product, dumpfile, options):
 		resp=cmd(*args)
 		if isinstance(resp,int):
 			if resp < args[-2]:
-				print "Warning: not all data made it to the device."
+				pass
+				#print "Warning: not all data made it to the device."
 		else:
+			outp.write(resp)
 			print "Device response:"
 			print resp.encode("string_escape")
 	
