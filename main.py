@@ -6,7 +6,7 @@ from struct import unpack
 from libusb1 import USBError
 
 def main():
-	usage="""%prog [-dbt][-f +-CIZB] <-i vendor:product || -n name> dumpfile"""
+	usage="""%prog [-dbtw] [-o <outfile>] [-f <filter>] <-i vendor:product || -n name> dumpfile"""
 	"""
 	Currently usbmon captures in text and raw form are supported. Note that you
 	will need to filter them to only include the device that you are testing."""
@@ -20,6 +20,7 @@ def main():
 	parser.add_option("-d", "--dry-run", action="store_true", dest="dry_run", help="don't actually run anything; print stuff", default=False)
 	parser.add_option("-f", "--filter", dest="filter", help="filter to assist in replaying the right packets")
 	parser.add_option("-o", dest="filename", help="file to write device responses", default="response.log")
+	parser.add_option("-w", "--interactive", dest="wait", action="store_true", help="pause after large responses", default=False)
 	(options, args) = parser.parse_args()
 	if len(args) < 1:
 		parser.error("You need to provide at least one dumpfile")
@@ -56,23 +57,26 @@ def replay(vendor, product, dumpfile, options):
 	context=USBContext()
 	usbdev=None
 	q=[]
+	rewind=[]
 	devices={}
+	windbreak=False
 	inc=["Ci","Co","Zi","Zo","Bi","Bo","Ii","Io"]
-	if "+" in options.filter:
-		mi=options.filter.index("+")
-		for i in xrange(len(inc)):
-			if inc[i] not in options.filter:
-				inc[i]=""
-	while "" in inc:
-		inc.remove("")
-	if "-" in options.filter:
-		mi=options.filter.index("-")
-		for i in xrange(mi+1, len(options.filter), 2):
-			try:
-				inc.remove(options.filter[i:i+2])
-			except ValueError:
-				pass
-	print "Only including devices that have", "|".join(inc), "traffic"
+	if options.filter is not None:
+		if "+" in options.filter:
+			mi=options.filter.index("+")
+			for i in xrange(len(inc)):
+				if inc[i] not in options.filter:
+					inc[i]=""
+		while "" in inc:
+			inc.remove("")
+		if "-" in options.filter:
+			mi=options.filter.index("-")
+			for i in xrange(mi+1, len(options.filter), 2):
+				try:
+					inc.remove(options.filter[i:i+2])
+				except ValueError:
+					pass
+		print "Only including devices that have", "|".join(inc), "traffic"
 	if vendor is not None and product is not None:
 		usbdev = context.openByVendorIDAndProductID(vendor, product)
 		if usbdev is None:
@@ -175,34 +179,75 @@ def replay(vendor, product, dumpfile, options):
 		exit(0)
 	outp=open(options.filename, "wb")
 	while q:
-		dev,bus=q.pop(0)
 		try:
-			cmd,args=q.pop(0)
-		except IndexError:
-			return
-		if (dev != rdev) or (rbus != bus):
-			continue
-		if "control" in str(cmd):
-			print "USB control transfer with type", hex(args[0]), "request", hex(args[1]), "value", hex(args[2])
-		if "Write" in str(cmd):
-			print "Sending",
-			if "bulk" in str(cmd):
-				print len(args[-2]), "bytes of data"
+			dev,bus=q.pop(0)
+			try:
+				cmd,args=q.pop(0)
+			except IndexError as e:
+				print e
+				print len(q)
+				return
+			if (dev != rdev) or (rbus != bus):
+				continue
+			if windbreak == False:
+				rewind.append((dev,bus))
+				rewind.append((cmd,args))
+			if "control" in str(cmd):
+				print "USB control transfer with type", hex(args[0]), "request", hex(args[1]), "value", hex(args[2])
+			if "Write" in str(cmd):
+				print "Sending",
+				if "bulk" in str(cmd):
+					print len(args[-2]), "bytes of data"
+				else:
+					print (args[-2]).encode("string_escape")
 			else:
-				print (args[-2]).encode("string_escape")
-		else:
-			print "Receiving", args[-2], "bytes of data"
-		if options.dry_run == True:
-			continue
-		resp=cmd(*args)
-		if isinstance(resp,int):
-			if resp < args[-2]:
-				pass
-				#print "Warning: not all data made it to the device."
-		else:
-			outp.write(resp)
-			print "Device response:"
-			print resp.encode("string_escape")
+				print "Receiving", args[-2], "bytes of data"
+			if options.dry_run == True:
+				continue
+			resp=cmd(*args)
+			if isinstance(resp,int):
+				if resp < args[-2]:
+					pass
+					#print "Warning: not all data made it to the device."
+			else:
+				outp.write(resp)
+				print "Device response:"
+				print resp.encode("string_escape")
+				if len(resp) > 32:
+					if options.wait == True:
+						print "Continue? Yep/Nope/Stop pausing/Rewind <1-{0}>".format(len(rewind)/2)
+						windbreak=False
+						while True:
+							_=raw_input()
+							if len(_) < 1:
+								break
+							else:
+								if (_[0] == "n" or _[0] == "N"):
+									exit(0)
+								elif (_[0] in ("S", "s", "P", "p")):
+									options.wait = False
+									break
+								elif (_[0] in ("R", "r", "B", "b")):
+									try:
+										com,num=_.split()
+										num=int(num)*2
+										q=rewind[-num:] + q
+										windbreak=True
+										break
+									except ValueError:
+										print "Rewind Usage: [RrBb] <#number of steps>"
+										continue
+								else:
+									break
+
+		except KeyboardInterrupt:
+			if options.wait == False:
+				options.wait = True
+			else:
+				print "Exiting on keyboard interrupt."
+				exit(0)
+							
+					
 	
 	
 
